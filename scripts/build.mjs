@@ -1,14 +1,57 @@
 const [manifestSource, outputPath = "index.html"] = process.argv.slice(2);
 const templatePath = new URL("../index.template.html", import.meta.url);
-const supportedAssetExtensions = /\.(avif|gif|jpe?g|png|svg|webp)$/i;
+const imageExtensions = /\.(avif|gif|jpe?g|png|svg|webp)$/i;
+const videoExtensions = /\.mp4$/i;
 
-function isSupportedAssetUrl(url) {
+function isSupportedUrl(url, extensions) {
   try {
-    return typeof url === "string" && /^https?:\/\//.test(url)
-      && supportedAssetExtensions.test(new URL(url).pathname);
+    if (typeof url !== "string") return false;
+    const parsed = new URL(url);
+    return /^https?:$/.test(parsed.protocol) && extensions.test(parsed.pathname);
   } catch {
     return false;
   }
+}
+
+function isSupportedImageUrl(url) {
+  return isSupportedUrl(url, imageExtensions);
+}
+
+function isSupportedVideoUrl(url) {
+  return isSupportedUrl(url, videoExtensions);
+}
+
+function invalidItemReason(entry) {
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return "entry must be an object";
+
+  const type = Object.hasOwn(entry, "type") ? entry.type : "image";
+  if (type !== "image" && type !== "video") return `unsupported type ${JSON.stringify(type)}`;
+  if (type === "video" && !isSupportedVideoUrl(entry.url)) return "video URL must be an HTTP(S) MP4";
+  if (type === "image" && !isSupportedImageUrl(entry.url)) return "unsupported HTTP(S) image URL";
+  if (Object.hasOwn(entry, "caption") && typeof entry.caption !== "string") return "caption must be a string";
+
+  if (type === "video") {
+    if (Object.hasOwn(entry, "poster") && !isSupportedImageUrl(entry.poster)) {
+      return "poster must be an HTTP(S) image URL";
+    }
+    return null;
+  }
+
+  if (Object.hasOwn(entry, "preview") && !isSupportedImageUrl(entry.preview)) {
+    return "preview must be an HTTP(S) image URL";
+  }
+  const srcset = entry.srcset || [];
+  if (!Array.isArray(srcset)) return "srcset must be an array";
+  let previousWidth = 0;
+  for (const candidate of srcset) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
+      || !isSupportedImageUrl(candidate.url)
+      || !Number.isSafeInteger(candidate.width) || candidate.width <= previousWidth) {
+      return "invalid srcset candidate";
+    }
+    previousWidth = candidate.width;
+  }
+  return null;
 }
 
 if (!manifestSource) {
@@ -43,36 +86,16 @@ if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
 if (Object.hasOwn(manifest, "title") && typeof manifest.title !== "string") {
   throw new Error("Manifest title must be a string");
 }
-if (!Array.isArray(manifest.images)) {
-  throw new Error("Manifest images must be an array");
+if (Object.hasOwn(manifest, "items") && Object.hasOwn(manifest, "images")) {
+  console.warn('Manifest contains both "items" and legacy "images"; ignoring "images".');
 }
-for (const [index, entry] of manifest.images.entries()) {
-  if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-    throw new Error(`Manifest entry ${index + 1} must be an object`);
-  }
-  if (!isSupportedAssetUrl(entry.url)) {
-    throw new Error(`Manifest entry ${index + 1} must have a supported HTTP(S) image URL`);
-  }
-  if (Object.hasOwn(entry, "caption") && typeof entry.caption !== "string") {
-    throw new Error(`Caption for ${entry.url} must be a string`);
-  }
-  if (Object.hasOwn(entry, "preview") && !isSupportedAssetUrl(entry.preview)) {
-    throw new Error(`Preview for ${entry.url} must be a supported HTTP(S) image URL`);
-  }
-  if (Object.hasOwn(entry, "srcset")) {
-    if (!Array.isArray(entry.srcset)) {
-      throw new Error(`Srcset for ${entry.url} must be an array`);
-    }
-    let previousWidth = 0;
-    for (const candidate of entry.srcset) {
-      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
-        || !isSupportedAssetUrl(candidate.url)
-        || !Number.isSafeInteger(candidate.width) || candidate.width <= previousWidth) {
-        throw new Error(`Invalid srcset candidate for ${entry.url}`);
-      }
-      previousWidth = candidate.width;
-    }
-  }
+const entries = Object.hasOwn(manifest, "items") ? manifest.items : manifest.images;
+if (!Array.isArray(entries)) {
+  throw new Error('Manifest must contain an "items" or "images" array');
+}
+for (const [index, entry] of entries.entries()) {
+  const reason = invalidItemReason(entry);
+  if (reason) console.warn(`Skipping manifest item ${index + 1}: ${reason}`);
 }
 
 const template = await Bun.file(templatePath).text();
