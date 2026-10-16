@@ -42,7 +42,8 @@ body {
   min-height: 0;
 }
 
-.image {
+.image,
+.video {
   position: absolute;
   inset: 0;
   display: block;
@@ -53,6 +54,71 @@ body {
   object-fit: contain;
 }
 
+.image[hidden],
+.video[hidden] {
+  display: none;
+}
+
+.video-navigation {
+  position: absolute;
+  z-index: 3;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-left: max(0.75rem, env(safe-area-inset-left));
+  padding-right: max(0.75rem, env(safe-area-inset-right));
+  pointer-events: none;
+}
+
+.video-navigation[hidden] {
+  display: none;
+}
+
+.video-navigation button {
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border: 1px solid rgb(255 255 255 / 60%);
+  border-radius: 50%;
+  background: rgb(0 0 0 / 55%);
+  color: #fff;
+  font: inherit;
+  font-size: 2rem;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.video-navigation button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.video-error {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 1rem;
+  padding: 1rem;
+  background: #111;
+  text-align: center;
+}
+
+.video-error[hidden] {
+  display: none;
+}
+
+.video-error button {
+  padding: 0.6rem 1rem;
+  font: inherit;
+  cursor: pointer;
+}
+
 .caption {
   position: absolute;
   z-index: 1;
@@ -61,6 +127,10 @@ body {
   width: fit-content;
   max-width: min(90vw, 120ch);
   color: #111;
+}
+
+.viewer[data-media-type="video"] .caption {
+  bottom: max(5rem, calc(env(safe-area-inset-bottom) + 5rem));
 }
 
 .caption[hidden] {
@@ -142,11 +212,20 @@ body {
     </style>
   </head>
   <body>
-    <main id="viewer" class="viewer" aria-busy="true" aria-label="flipbook image viewer">
-      <div class="image-stage">
+    <main id="viewer" class="viewer" aria-busy="true" aria-label="flipbook media viewer">
+      <div id="image-stage" class="image-stage">
         <img id="image" class="image" alt="" />
+        <video id="video" class="video" controls playsinline preload="metadata" hidden></video>
+        <div id="video-navigation" class="video-navigation" hidden>
+          <button id="previous-video-item" type="button" aria-label="Previous item">‹</button>
+          <button id="next-video-item" type="button" aria-label="Next item">›</button>
+        </div>
+        <section id="video-error" class="video-error" role="alert" hidden>
+          <p>Could not play this video.</p>
+          <button id="retry-video" type="button">Retry</button>
+        </section>
       </div>
-      <section id="caption" class="caption" aria-label="Image subtitle" hidden>
+      <section id="caption" class="caption" aria-label="Media caption" hidden>
         <p id="caption-text" class="caption-text"></p>
       </section>
       <p id="position" class="position" aria-live="polite"></p>
@@ -155,12 +234,18 @@ body {
         <svg class="loading-arc" fill="none" aria-hidden="true" viewBox="0 0 24 24">
           <circle class="loading-arc-spin" cx="12" cy="12" r="10" stroke="currentColor" stroke-dasharray="18 44.8" stroke-linecap="round" stroke-width="2.5" />
         </svg>
-        <span class="visually-hidden">Loading image</span>
+        <span class="visually-hidden">Loading media</span>
       </div>
     </main>
     <script>
 const viewer = document.querySelector("#viewer");
 const image = document.querySelector("#image");
+let video = document.querySelector("#video");
+const videoNavigation = document.querySelector("#video-navigation");
+const previousVideoItem = document.querySelector("#previous-video-item");
+const nextVideoItem = document.querySelector("#next-video-item");
+const videoError = document.querySelector("#video-error");
+const retryVideo = document.querySelector("#retry-video");
 const position = document.querySelector("#position");
 const caption = document.querySelector("#caption");
 const captionText = document.querySelector("#caption-text");
@@ -168,13 +253,15 @@ const loading = document.querySelector("#loading");
 const defaultManifestUrl = "https://cdn.kahvipatel.com/newsletter-assets/manifest.json";
 const defaultPageTitle = "flipbook";
 const manifestStorageKey = "flipbook:manifest-url";
-const supportedAssetExtensions = /\.(avif|gif|jpe?g|png|svg|webp)$/i;
+const supportedImageExtensions = /\.(avif|gif|jpe?g|png|svg|webp)$/i;
+const supportedVideoExtensions = /\.mp4$/i;
 const preloadAhead = 2;
 const preloadBehind = 1;
 const imageSizes = "100vw";
 const edgeTapFraction = 1 / 3;
 let assets = [];
 const preloads = new Map();
+const videoMetadataPreloads = new Map();
 let navigationDirection = 1;
 let renderVersion = 0;
 
@@ -188,12 +275,22 @@ function configuredManifestUrl() {
   }
 }
 
-function isSupportedAssetUrl(url) {
+function isSupportedUrl(url, extensions) {
   try {
-    return typeof url === "string" && supportedAssetExtensions.test(new URL(url).pathname);
+    if (typeof url !== "string") return false;
+    const parsed = new URL(url);
+    return /^https?:$/.test(parsed.protocol) && extensions.test(parsed.pathname);
   } catch {
     return false;
   }
+}
+
+function isSupportedImageUrl(url) {
+  return isSupportedUrl(url, supportedImageExtensions);
+}
+
+function isSupportedVideoUrl(url) {
+  return isSupportedUrl(url, supportedVideoExtensions);
 }
 
 function srcsetFor(asset) {
@@ -238,39 +335,55 @@ async function loadManifest() {
   if (Object.hasOwn(manifest, "title") && typeof manifest.title !== "string") {
     throw new Error("Manifest title must be a string");
   }
-  if (!Array.isArray(manifest.images)) throw new Error("Manifest images must be an array");
+  if (Object.hasOwn(manifest, "items") && Object.hasOwn(manifest, "images")) {
+    console.warn('Manifest contains both "items" and legacy "images"; ignoring "images".');
+  }
+  const entries = Object.hasOwn(manifest, "items") ? manifest.items : manifest.images;
+  if (!Array.isArray(entries)) throw new Error('Manifest must contain an "items" or "images" array');
 
   const nextAssets = [];
-  for (const [index, entry] of manifest.images.entries()) {
-    if (!entry || typeof entry !== "object" || typeof entry.url !== "string") {
-      throw new Error(`Invalid manifest entry ${index + 1}`);
-    }
-    if (!isSupportedAssetUrl(entry.url)) {
-      console.warn(`Skipping unsupported image URL: ${entry.url}`);
+  for (const [index, entry] of entries.entries()) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      console.warn(`Skipping manifest item ${index + 1}: entry must be an object`);
       continue;
     }
-    if (Object.hasOwn(entry, "caption") && typeof entry.caption !== "string") {
-      throw new Error(`Invalid caption for manifest entry ${index + 1}`);
-    }
-    if (Object.hasOwn(entry, "preview") && !isSupportedAssetUrl(entry.preview)) {
-      throw new Error(`Invalid preview for manifest entry ${index + 1}`);
-    }
 
-    const srcset = entry.srcset || [];
-    if (!Array.isArray(srcset)) throw new Error(`Invalid srcset for manifest entry ${index + 1}`);
-    let previousWidth = 0;
-    for (const candidate of srcset) {
-      if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
-        || !isSupportedAssetUrl(candidate.url) || !Number.isSafeInteger(candidate.width)
-        || candidate.width <= previousWidth) {
-        throw new Error(`Invalid srcset candidate for manifest entry ${index + 1}`);
+    const type = Object.hasOwn(entry, "type") ? entry.type : "image";
+    let reason;
+    if (type !== "image" && type !== "video") reason = `unsupported type "${type}"`;
+    else if (typeof entry.url !== "string") reason = "missing URL";
+    else if (type === "video" && !isSupportedVideoUrl(entry.url)) reason = "video URL must be an HTTP(S) MP4";
+    else if (type === "image" && !isSupportedImageUrl(entry.url)) reason = "unsupported image URL";
+    else if (Object.hasOwn(entry, "caption") && typeof entry.caption !== "string") reason = "caption must be a string";
+    else if (type === "video" && Object.hasOwn(entry, "poster") && !isSupportedImageUrl(entry.poster)) reason = "poster must be an HTTP(S) image URL";
+    else if (type === "image" && Object.hasOwn(entry, "preview") && !isSupportedImageUrl(entry.preview)) reason = "preview must be an HTTP(S) image URL";
+
+    const srcset = type === "image" ? (entry.srcset || []) : [];
+    if (!reason && type === "image") {
+      if (!Array.isArray(srcset)) reason = "srcset must be an array";
+      else {
+        let previousWidth = 0;
+        for (const candidate of srcset) {
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)
+            || !isSupportedImageUrl(candidate.url) || !Number.isSafeInteger(candidate.width)
+            || candidate.width <= previousWidth) {
+            reason = "invalid srcset candidate";
+            break;
+          }
+          previousWidth = candidate.width;
+        }
       }
-      previousWidth = candidate.width;
+    }
+    if (reason) {
+      console.warn(`Skipping manifest item ${index + 1}: ${reason}`);
+      continue;
     }
 
     nextAssets.push({
+      type,
       url: entry.url,
-      preview: entry.preview || null,
+      preview: type === "image" ? (entry.preview || null) : null,
+      poster: type === "video" ? (entry.poster || null) : null,
       srcset,
       caption: entry.caption || ""
     });
@@ -304,7 +417,7 @@ function updateHash() {
 }
 
 function loadFullImage(index, priority = "low") {
-  if (index < 0 || index >= assets.length) return null;
+  if (index < 0 || index >= assets.length || assets[index].type !== "image") return null;
 
   const existing = preloads.get(index);
   if (existing) {
@@ -324,6 +437,19 @@ function loadFullImage(index, priority = "low") {
   return entry;
 }
 
+function preloadVideoMetadata(index) {
+  if (index < 0 || index >= assets.length || index === currentIndex || assets[index].type !== "video"
+    || videoMetadataPreloads.has(index)) return;
+
+  const preloadVideo = document.createElement("video");
+  preloadVideo.preload = "metadata";
+  preloadVideo.muted = true;
+  preloadVideo.playsInline = true;
+  preloadVideo.src = assets[index].url;
+  preloadVideo.load();
+  videoMetadataPreloads.set(index, preloadVideo);
+}
+
 function trimPreloads() {
   const keep = new Set([currentIndex]);
   for (let step = 1; step <= preloadAhead; step += 1) keep.add(currentIndex + navigationDirection * step);
@@ -335,43 +461,106 @@ function trimPreloads() {
       preloads.delete(index);
     }
   }
+  for (const [index, preloadVideo] of videoMetadataPreloads) {
+    if (!keep.has(index) || index === currentIndex) {
+      preloadVideo.removeAttribute("src");
+      preloadVideo.load();
+      videoMetadataPreloads.delete(index);
+    }
+  }
 }
 
 function preloadAroundCurrent() {
   for (let step = 1; step <= preloadAhead; step += 1) {
-    loadFullImage(currentIndex + navigationDirection * step)?.promise.catch(() => {});
+    const index = currentIndex + navigationDirection * step;
+    loadFullImage(index)?.promise.catch(() => {});
+    preloadVideoMetadata(index);
   }
   for (let step = 1; step <= preloadBehind; step += 1) {
-    loadFullImage(currentIndex - navigationDirection * step)?.promise.catch(() => {});
+    const index = currentIndex - navigationDirection * step;
+    loadFullImage(index)?.promise.catch(() => {});
+    preloadVideoMetadata(index);
   }
   trimPreloads();
+}
+
+function assetName(asset) {
+  const filename = new URL(asset.url).pathname.split("/").pop() || "media";
+  try {
+    return decodeURIComponent(filename);
+  } catch {
+    return filename;
+  }
+}
+
+function stopVideo() {
+  video.pause();
+  video.removeAttribute("src");
+  video.removeAttribute("poster");
+  video.load();
+}
+
+function attachVideo(asset, version) {
+  video.controls = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  video.hidden = false;
+  video.setAttribute("aria-label", asset.caption || assetName(asset));
+  if (asset.poster) video.poster = asset.poster;
+  video.addEventListener("loadedmetadata", () => {
+    if (version === renderVersion) setLoading(false);
+  }, { once: true });
+  video.addEventListener("error", () => {
+    if (version !== renderVersion) return;
+    console.error(`Could not play ${asset.url}`, video.error);
+    video.hidden = true;
+    videoError.hidden = false;
+    setLoading(false);
+  }, { once: true });
+  video.src = asset.url;
+  video.load();
 }
 
 function render() {
   const version = ++renderVersion;
   const asset = assets[currentIndex];
-  const assetName = decodeURIComponent(new URL(asset.url).pathname.split("/").pop());
-
-  image.alt = assetName;
-  image.fetchPriority = "high";
-  setLoading(true);
+  stopVideo();
+  video.hidden = true;
+  videoError.hidden = true;
+  image.hidden = asset.type !== "image";
+  viewer.dataset.mediaType = asset.type;
   position.textContent = `${currentIndex + 1} / ${assets.length}`;
   renderCaption();
   updateHash();
 
-  if (asset.preview) applyPreviewSource(image, asset);
+  videoNavigation.hidden = asset.type !== "video";
+  previousVideoItem.disabled = currentIndex === 0;
+  nextVideoItem.disabled = currentIndex === assets.length - 1;
 
-  const fullImage = loadFullImage(currentIndex, "high");
-  fullImage.promise.then((loadedImage) => {
-    if (version !== renderVersion) return;
-    applyFullSource(image, asset, loadedImage.currentSrc || asset.url);
+  if (asset.type === "video") {
+    image.removeAttribute("src");
+    image.removeAttribute("srcset");
+    image.removeAttribute("sizes");
     setLoading(false);
-  }).catch(() => {
-    if (version !== renderVersion) return;
-    console.error(`Could not load ${asset.url}`);
-    if (!asset.preview) image.src = asset.url;
-    setLoading(false);
-  });
+    attachVideo(asset, version);
+  } else {
+    image.alt = assetName(asset);
+    image.fetchPriority = "high";
+    setLoading(true);
+    if (asset.preview) applyPreviewSource(image, asset);
+
+    const fullImage = loadFullImage(currentIndex, "high");
+    fullImage.promise.then((loadedImage) => {
+      if (version !== renderVersion) return;
+      applyFullSource(image, asset, loadedImage.currentSrc || asset.url);
+      setLoading(false);
+    }).catch(() => {
+      if (version !== renderVersion) return;
+      console.error(`Could not load ${asset.url}`);
+      if (!asset.preview) image.src = asset.url;
+      setLoading(false);
+    });
+  }
 
   preloadAroundCurrent();
 }
@@ -395,8 +584,29 @@ image.addEventListener("error", () => {
   console.error(`Could not load ${image.src}`);
 });
 
+previousVideoItem.addEventListener("click", () => goTo(currentIndex - 1));
+nextVideoItem.addEventListener("click", () => goTo(currentIndex + 1));
+retryVideo.addEventListener("click", () => {
+  const asset = assets[currentIndex];
+  if (!asset || asset.type !== "video") return;
+
+  video.pause();
+  video.removeAttribute("src");
+  video.load();
+  const replacement = document.createElement("video");
+  replacement.id = "video";
+  replacement.className = "video";
+  replacement.controls = true;
+  replacement.playsInline = true;
+  replacement.preload = "metadata";
+  video.replaceWith(replacement);
+  video = replacement;
+  videoError.hidden = true;
+  attachVideo(asset, renderVersion);
+});
+
 viewer.addEventListener("pointerdown", (event) => {
-  if (event.button !== 0) return;
+  if (event.button !== 0 || !assets[currentIndex] || assets[currentIndex].type !== "image") return;
 
   const bounds = viewer.getBoundingClientRect();
   const horizontalPosition = (event.clientX - bounds.left) / bounds.width;
@@ -425,7 +635,7 @@ window.addEventListener("keydown", (event) => {
   } else if (event.key.toLowerCase() === "f") {
     toggleFullscreen();
   }
-});
+}, true);
 
 window.addEventListener("hashchange", () => {
   const targetIndex = indexFromHash();
@@ -440,7 +650,7 @@ async function initialize() {
   try {
     await loadManifest();
     if (assets.length === 0) {
-      position.textContent = "No images in the manifest";
+      position.textContent = "No supported items in the manifest";
       setLoading(false);
     } else {
       currentIndex = indexFromHash();

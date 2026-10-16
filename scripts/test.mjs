@@ -3,6 +3,11 @@ const template = await Bun.file(new URL("../index.template.html", import.meta.ur
 const build = await Bun.file(new URL("./build.mjs", import.meta.url)).text();
 const devServer = await Bun.file(new URL("./dev.mjs", import.meta.url)).text();
 const packageConfig = JSON.parse(await Bun.file(new URL("../package.json", import.meta.url)).text());
+const expectedHtml = template.replace(
+  "__MANIFEST_URL__",
+  JSON.stringify("https://cdn.kahvipatel.com/newsletter-assets/manifest.json")
+);
+if (html !== expectedHtml) throw new Error("index.html must be the built template with its configured manifest URL");
 
 for (const marker of [
   "<style>",
@@ -13,8 +18,19 @@ for (const marker of [
   "const defaultPageTitle = \"flipbook\"",
   "let manifestTitle = defaultPageTitle;",
   "function configuredManifestUrl()",
-  "function isSupportedAssetUrl(url)",
+  "function isSupportedImageUrl(url)",
+  "function isSupportedVideoUrl(url)",
   "let assets = []",
+  'const entries = Object.hasOwn(manifest, "items") ? manifest.items : manifest.images',
+  'const type = Object.hasOwn(entry, "type") ? entry.type : "image"',
+  'video.preload = "metadata"',
+  'video.playsInline = true',
+  'videoNavigation.hidden = asset.type !== "video"',
+  'retryVideo.addEventListener("click"',
+  'viewer.dataset.mediaType = asset.type',
+  'window.addEventListener("keydown", (event) => {',
+  'video.pause();',
+  'videoError.hidden = false;',
   'fetch(manifestUrl, { cache: "no-store" })',
   "function srcsetFor(asset)",
   "function applyPreviewSource(target, asset)",
@@ -23,7 +39,7 @@ for (const marker of [
   "const preloadBehind = 1",
   'throw new Error("Set an HTTP(S) manifest URL")',
   'throw new Error("Manifest title must be a string")',
-  "for (const [index, entry] of manifest.images.entries())",
+  'const entries = Object.hasOwn(manifest, "items") ? manifest.items : manifest.images',
   "document.title = manifestTitle;",
   'event.key.toLowerCase() === "h"',
   'event.key.toLowerCase() === "l"',
@@ -68,10 +84,13 @@ for (const marker of [
   "Build requires an HTTP(S) manifest URL",
   "Array.isArray(loadedManifest) ? { images: loadedManifest } : loadedManifest",
   'throw new Error("Manifest title must be a string")',
-  "for (const [index, entry] of manifest.images.entries())",
+  'const entries = Object.hasOwn(manifest, "items") ? manifest.items : manifest.images',
+  'Manifest contains both "items" and legacy "images"',
+  "function invalidItemReason(entry)",
+  'if (reason) console.warn(`Skipping manifest item ${index + 1}: ${reason}`)',
   "const response = await fetch(manifestUrl)",
-  "function isSupportedAssetUrl(url)",
-  "Srcset for ${entry.url} must be an array",
+  "function isSupportedUrl(url, extensions)",
+  'poster must be an HTTP(S) image URL',
   "manifestUrl.href"
 ]) {
   if (!build.includes(marker)) throw new Error(`Missing ${marker} from scripts/build.mjs`);

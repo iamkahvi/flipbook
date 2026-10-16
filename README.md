@@ -1,46 +1,42 @@
 # flipbook
 
-flipbook displays the images in a manifest.
+flipbook displays an ordered collection of images and videos from a JSON manifest.
 
 It is a static web application. It uses one HTML file and one JSON manifest file. flipbook loads the manifest when the page opens. You can change the manifest without building the HTML file again.
 
-flipbook shows the complete image. It does not crop or resize the image.
+flipbook shows the complete image or video frame. It does not crop or resize media.
 
 ## Requirements
 
 flipbook requires only [Bun](https://bun.sh/). Bun builds `index.html`, runs the checks, and provides the local development server.
 
-## Set the image list
+## Set the media list
 
-The image list is a JSON manifest at an HTTP or HTTPS URL. This URL is the source of truth for flipbook.
+The manifest is a JSON document at an HTTP or HTTPS URL. This URL is the source of truth for flipbook.
 
-The manifest can be an object containing an `images` array, as shown below, or the image array itself. An object manifest can also contain a title. flipbook uses the title for the browser page title. If the manifest has no title—or is a bare array—flipbook uses `flipbook`. Each image item must have an HTTP or HTTPS image URL. An item can also have a caption. For faster display, it can provide a small preview and a width-qualified `srcset` of responsive derivatives.
+Use an `items` array for an ordered mixture of images and videos. An object manifest can also contain a title; flipbook uses it for the browser page title and defaults to `flipbook`. Entries without `type` are treated as images for backward compatibility; use `"type": "video"` for video entries. The legacy `images` array and bare-array manifests remain supported. If both `items` and `images` are present, flipbook uses `items` and warns that it ignored `images`.
 
 ```json
 {
-  "title": "Image collection",
-  "images": [
+  "title": "Media collection",
+  "items": [
     {
       "url": "https://images.example.com/covers/image-001.jpg",
-      "caption": "Caption text"
+      "caption": "A photograph"
     },
     {
-      "url": "https://images.example.com/image-002.png"
+      "type": "video",
+      "url": "https://videos.example.com/clip-001.mp4",
+      "poster": "https://images.example.com/posters/clip-001.webp",
+      "caption": "A short clip"
     }
   ]
 }
 ```
 
-Use only these image types:
+Supported image types are AVIF, GIF, JPEG/JPG, PNG, SVG, and WebP. Images may provide a `preview` and a width-qualified `srcset` of responsive derivatives.
 
-- AVIF
-- GIF
-- JPEG or JPG
-- PNG
-- SVG
-- WebP
-
-flipbook ignores unsupported items when it loads a manifest.
+Videos must be direct MP4 files encoded with H.264 video and AAC audio. A `poster` image is optional. The viewer uses native browser controls, does not autoplay, and asks browsers to play inline. It pauses and resets a video when navigating away. Video items have persistent previous/next buttons; image items retain left/right edge-tap navigation. Invalid or unsupported entries are skipped with a console warning, and displayed numbering and URL hashes count only the remaining supported items.
 
 ### Responsive images and previews
 
@@ -62,6 +58,8 @@ flipbook ignores unsupported items when it loads a manifest.
 The viewer selects an appropriate `srcset` candidate for the viewport and device pixel ratio. It displays `preview` while the selected full image is loading and decoding. Without these optional fields, it continues to load `url` exactly as before.
 
 Generate and host the derivative files before publishing the manifest. flipbook does not resize a remote original in the browser or upload files to an image service.
+
+For video hosting, serve MP4 files with `Content-Type: video/mp4` and support HTTP byte-range requests (`Accept-Ranges: bytes`) so the browser can seek and buffer efficiently. These are publisher/CDN requirements; flipbook does not probe for them. Cross-origin media playback does not require CORS. The H.264/AAC codec and hosting configuration are the publisher's responsibility.
 
 In normal mode, flipbook reads captions from the manifest. It does not provide controls to change them.
 
@@ -131,16 +129,16 @@ Use these controls in normal mode:
 
 | Action | Control |
 | --- | --- |
-| Show the previous image | Left Arrow, `H`, or tap the left third of the screen |
-| Show the next image | Right Arrow, `L`, or tap the right third of the screen |
-| Use the browser image menu | Press and hold the middle third of the image |
+| Show the previous item | Left Arrow, `H`, or tap the left third of an image; use the previous button on videos |
+| Show the next item | Right Arrow, `L`, or tap the right third of an image; use the next button on videos |
+| Use the browser media menu | Press and hold the middle third of the current media |
 | Show the first image | `Home` |
 | Show the last image | `End` |
 | Enter or leave full-screen mode | `F` |
 
-The URL fragment identifies the current image. For example, `#3` opens the third image. You can bookmark or share this URL.
+The URL fragment identifies the current item. For example, `#3` opens the third supported item. You can bookmark or share this URL.
 
-A caption appears in the bottom-left corner of the image. The caption text has a white background. Long captions wrap inside the viewport.
+A caption appears in the bottom-left corner of the media. On videos it sits above the native controls. The caption text has a white background. Long captions wrap inside the viewport.
 
 ## Test flipbook
 
